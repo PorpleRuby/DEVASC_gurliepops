@@ -8,7 +8,7 @@ A Python command-line tool that displays this computer's current public IPv4 and
 
 
 pip install requests
-python ip_info.py
+python ip_info_gurliepops.py
 
 
 Requires Python 3.8 or newer. No API key is needed.
@@ -17,10 +17,10 @@ Requires Python 3.8 or newer. No API key is needed.
 
  Command and What it does 
 
- `python ip_info.py` => Shows details for this computer's public IPv4 and IPv6 addresses 
- `python ip_info.py --ip 8.8.8.8` => Looks up any IPv4 or IPv6 address 
- `python ip_info.py --json` => Prints raw JSON instead of tables 
- `python ip_info.py --no-color` => Turns off colored output 
+ `python ip_info_gurliepops.py` => Shows details for this computer's public IPv4 and IPv6 addresses 
+ `python ip_info_gurliepops.py --ip 8.8.8.8` => Looks up any IPv4 or IPv6 address 
+ `python ip_info_gurliepops.py --json` => Prints raw JSON instead of tables 
+ `python ip_info_gurliepops.py --no-color` => Turns off colored output 
 
 ## Features
 
@@ -39,7 +39,7 @@ Requires Python 3.8 or newer. No API key is needed.
 
 ## Code guide for the next team
 
-- `ip_info.py` is a single file, organized top to bottom: configuration, API functions, display functions, then `main()`.
+- `ip_info_gurliepops.py` is a single file, organized top to bottom: configuration, API functions, display functions, then `main()`.
 - To add a new field to the output, add a `(label, json_key)` pair to `DISPLAY_FIELDS`.
 - To switch details providers, only `lookup_ip()` needs to change.
 - Errors from the details API are raised as `ApiError` and caught in `main()`.
