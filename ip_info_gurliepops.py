@@ -8,11 +8,11 @@ of this computer along with location, ISP/organization, ASN, country code,
 and time zone.
 
 USAGE
-    python ip_info.py                 # this computer's public IPv4 and IPv6
-    python ip_info.py --ip 8.8.8.8    # look up any IPv4 or IPv6 address
-    python ip_info.py --json          # raw JSON output (good for scripts)
-    python ip_info.py --no-color      # plain text output
-    python ip_info.py --help          # show all options
+    python ip.py                 # this computer's public IPv4 and IPv6
+    python ip.py --ip 8.8.8.8    # look up any IPv4 or IPv6 address
+    python ip.py --json          # raw JSON output (good for scripts)
+    python ip.py --no-color      # plain text output
+    python ip.py --help          # show all options
 
 REQUIREMENTS
     Python 3.8+. Uses only the standard library (no pip install needed).
@@ -31,6 +31,16 @@ HOW TO EXTEND
 KNOWN LIMITATIONS
     - IP geolocation is approximate; the city may not be the real location.
     - Behind a VPN or proxy, the VPN's public address is shown.
+    - Private/reserved addresses (e.g. 192.168.x.x) have no public details.
+
+BACKLOG (future enhancements for Project Activity 4)
+    - Export results to a CSV or text file
+    - Show the reverse-DNS hostname of each address
+    - Flag whether the address belongs to a VPN, proxy, or hosting provider
+    - Batch lookup of many addresses from a file
+    - Backup details API if ipwho.is is down or rate-limited
+    - Show latitude/longitude with a map link
+    - GUI or web version for technicians who prefer not to use a terminal
 """
 
 import argparse
@@ -190,10 +200,16 @@ def main():
 
     try:
         if args.ip:
+            # Check the address before calling any API.
             try:
-                ipaddress.ip_address(args.ip)
+                address = ipaddress.ip_address(args.ip)
             except ValueError:
-                print(f"[ERROR] '{args.ip}' is not a valid IPv4 or IPv6 address.")
+                print(f"[ERROR] '{args.ip}' is not a valid IPv4 or IPv6 address.",
+                      file=sys.stderr)
+                return 2
+            if not address.is_global:
+                print(f"[ERROR] '{args.ip}' is a private or reserved address "
+                      "and has no public information.", file=sys.stderr)
                 return 2
             results["LOOKUP RESULT"] = lookup_ip(args.ip)
         else:
@@ -210,7 +226,8 @@ def main():
                 # ipify failed for both; let the details API detect the address.
                 results["PUBLIC IP INFORMATION"] = lookup_ip()
     except ApiError as err:
-        print(f"\n[ERROR] {err}\n")
+        # Errors go to stderr so --json output stays clean for scripts.
+        print(f"\n[ERROR] {err}\n", file=sys.stderr)
         return 1
 
     if args.json:
