@@ -1,44 +1,52 @@
 """
 IPv4/IPv6 Address Information App
 DEVASC Project Activity 3 - Social Coding (Option 2)
-Team: Gurliepops (Alyssa Abejuela, Ma. Carla Jane Mangao, Shaula J. Ygbuhay)
+Team: Gurliepops (Alyssa Margarette Abejuela, Ma. Carla Jane Mangao, Shaula J. Ygbuhay)
 
 A Python command-line tool that displays the public IPv4 and IPv6 addresses
 of this computer along with location, ISP/organization, ASN, country code,
 and time zone.
 
 USAGE
-    python ip.py                 # this computer's public IPv4 and IPv6
-    python ip.py --ip 8.8.8.8    # look up any IPv4 or IPv6 address
-    python ip.py --json          # raw JSON output (good for scripts)
-    python ip.py --no-color      # plain text output
-    python ip.py --help          # show all options
+    python ip_info_gurliepops.py                 # this computer's public IPv4 and IPv6
+    python ip_info_gurliepops.py --ip 8.8.8.8    # look up any IPv4 or IPv6 address
+    python ip_info_gurliepops.py --json          # raw JSON output (good for scripts)
+    python ip_info_gurliepops.py --no-color      # plain text output
+    python ip_info_gurliepops.py --help          # show all options
 
 REQUIREMENTS
-    Python 3.8+. Uses only the standard library (no pip install needed).
+    Python 3.8+ and the third-party 'requests' library.
+        pip install requests
 
 HOW IT WORKS
     1. api.ipify.org   -> public IPv4 address
     2. api6.ipify.org  -> public IPv6 address (fails if there is no IPv6)
-    3. ipwho.is        -> details (city, ISP, ASN...) for each address
-    If steps 1 and 2 both fail, we ask ipwho.is to detect the address itself.
+    3. ipapi.co        -> details (city, ISP, ASN...) for each address.
+                           Main provider: no API key required for lookups.
+       ipwho.is        -> backup details API, used if ipapi.co fails or
+                           is rate-limited.
+    If steps 1 and 2 both fail, we ask the details APIs to detect the
+    address themselves.
 
 HOW TO EXTEND
     - New output field: add a (label, json_key) pair to DISPLAY_FIELDS and
-      add the matching key in lookup_ip().
-    - Different details provider: only lookup_ip() needs to change.
+      add the matching key in BOTH lookup_ipapi() and lookup_ipwhois().
+    - New details provider: write a lookup_<name>() function that returns
+      the same dictionary keys, then add it to DETAILS_PROVIDERS.
 
 KNOWN LIMITATIONS
     - IP geolocation is approximate; the city may not be the real location.
     - Behind a VPN or proxy, the VPN's public address is shown.
     - Private/reserved addresses (e.g. 192.168.x.x) have no public details.
+    - Free APIs limit how many requests you can make; running the app many
+      times in a row may cause N/A fields until the limit resets.
 
 BACKLOG (future enhancements for Project Activity 4)
     - Export results to a CSV or text file
     - Show the reverse-DNS hostname of each address
     - Flag whether the address belongs to a VPN, proxy, or hosting provider
     - Batch lookup of many addresses from a file
-    - Backup details API if ipwho.is is down or rate-limited
+    - Cache results for a few minutes to avoid hitting API limits
     - Show latitude/longitude with a map link
     - GUI or web version for technicians who prefer not to use a terminal
 """
@@ -46,20 +54,20 @@ BACKLOG (future enhancements for Project Activity 4)
 import argparse
 import ipaddress
 import json
-import socket
 import sys
-import urllib.error
-import urllib.request
+
+import requests
 
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
 IPV4_API = "https://api.ipify.org"
 IPV6_API = "https://api6.ipify.org"
-DETAILS_API = "https://ipwho.is/{}"  # empty address = this computer's own
+IPAPI_API = "https://ipapi.co/{}json/"     # "" or "1.2.3.4/" goes in the {}
+IPWHOIS_API = "https://ipwho.is/{}"        # empty address = this computer's own
 TIMEOUT_SECONDS = 10
 
-# (label shown to the user, key in the dictionary returned by lookup_ip)
+# (label shown to the user, key in the dictionary returned by the lookups)
 DISPLAY_FIELDS = [
     ("IP Address", "ip"),
     ("Version", "version"),
@@ -80,21 +88,32 @@ class ApiError(Exception):
 # Network helpers
 # ---------------------------------------------------------------------------
 def fetch_url(url):
-    """Download a URL with urllib and return the response body as text."""
-    request = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    """Download a URL with requests and return the response body as text."""
     try:
-        with urllib.request.urlopen(request, timeout=TIMEOUT_SECONDS) as response:
-            return response.read().decode("utf-8").strip()
-    except urllib.error.HTTPError as err:  # must come before URLError
-        if err.code == 429:
+        response = requests.get(
+            url, headers={"User-Agent": "Mozilla/5.0"}, timeout=TIMEOUT_SECONDS
+        )
+        if response.status_code == 429:
             raise ApiError("Rate limit exceeded (HTTP 429). Try again later.")
-        raise ApiError(f"HTTP error {err.code}: {err.reason}")
-    except (socket.timeout, TimeoutError):
+        response.raise_for_status()
+        return response.text.strip()
+    except requests.exceptions.Timeout:
         raise ApiError("Connection timed out.")
-    except urllib.error.URLError as err:
-        raise ApiError(f"Network error: {err.reason}")
-    except OSError as err:  # any other low-level network failure
+    except requests.exceptions.HTTPError as err:
+        raise ApiError(f"HTTP error: {err}")
+    except requests.exceptions.ConnectionError as err:
         raise ApiError(f"Network error: {err}")
+    except requests.exceptions.RequestException as err:
+        raise ApiError(f"Network error: {err}")
+
+
+def fetch_json(url):
+    """Download a URL and parse it as JSON."""
+    raw = fetch_url(url)
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        raise ApiError("Could not read the response from the details API.")
 
 
 def get_public_ip(url):
@@ -111,18 +130,33 @@ def get_public_ip(url):
         return None
 
 
-def lookup_ip(address=""):
-    """
-    Get details for an address from ipwho.is ("" = this computer's own).
+# ---------------------------------------------------------------------------
+# Details providers
+# Each one returns a dictionary with the keys used in DISPLAY_FIELDS,
+# or raises ApiError.
+# ---------------------------------------------------------------------------
+def lookup_ipapi(address=""):
+    """Get details from ipapi.co (main provider)."""
+    data = fetch_json(IPAPI_API.format(f"{address}/" if address else ""))
+    if data.get("error"):
+        raise ApiError(data.get("reason", "Invalid IP or API error."))
 
-    Returns a dictionary with the keys used in DISPLAY_FIELDS.
-    Raises ApiError with a readable message if something goes wrong.
-    """
-    raw = fetch_url(DETAILS_API.format(address))
-    try:
-        data = json.loads(raw)
-    except json.JSONDecodeError:
-        raise ApiError("Could not read the response from the details API.")
+    # ipapi.co already returns flat values; ASN is already like "AS9299".
+    return {
+        "ip": data.get("ip"),
+        "version": data.get("version"),
+        "city": data.get("city"),
+        "region": data.get("region"),
+        "country_code": data.get("country_code"),
+        "org": data.get("org"),
+        "asn": data.get("asn"),
+        "timezone": data.get("timezone"),
+    }
+
+
+def lookup_ipwhois(address=""):
+    """Get details from ipwho.is (backup provider)."""
+    data = fetch_json(IPWHOIS_API.format(address))
     if not data.get("success", False):
         raise ApiError(data.get("message", "Invalid IP or API error."))
 
@@ -142,9 +176,27 @@ def lookup_ip(address=""):
     }
 
 
+# Tried in this order until one works.
+DETAILS_PROVIDERS = [lookup_ipapi, lookup_ipwhois]
+
+
+def lookup_ip(address=""):
+    """
+    Get details for an address ("" = this computer's own), trying each
+    provider in DETAILS_PROVIDERS. Raises ApiError if all of them fail.
+    """
+    last_error = None
+    for provider in DETAILS_PROVIDERS:
+        try:
+            return provider(address)
+        except ApiError as err:
+            last_error = err  # try the next provider
+    raise last_error
+
+
 def safe_lookup(address):
     """
-    Like lookup_ip(), but if the details lookup fails (for example the API is
+    Like lookup_ip(), but if every provider fails (for example they are all
     rate-limited) we still return the bare address so the user sees something.
     """
     try:
@@ -223,7 +275,7 @@ def main():
             if ipv6:
                 results["PUBLIC IPv6 INFORMATION"] = safe_lookup(ipv6)
             if not results:
-                # ipify failed for both; let the details API detect the address.
+                # ipify failed for both; let the details APIs detect the address.
                 results["PUBLIC IP INFORMATION"] = lookup_ip()
     except ApiError as err:
         # Errors go to stderr so --json output stays clean for scripts.
